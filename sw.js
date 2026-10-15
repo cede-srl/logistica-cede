@@ -1,6 +1,8 @@
 // Guarda la "cáscara" de la app para que abra rápido y muestre el aviso de sin conexión.
 // Los datos siempre vienen en vivo de Google (no se guardan acá).
-var CACHE = 'cede-logistica-v5';
+// También muestra los avisos push (Firebase) aunque la app esté cerrada: pedidos entregados (Logística)
+// y tareas asignadas (Cuadrilla).
+var CACHE = 'cede-logistica-v6';
 var ARCHIVOS = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', function (e) {
@@ -30,11 +32,32 @@ self.addEventListener('fetch', function (e) {
   );
 });
 
-// Al tocar la notificación de un pedido entregado, abre (o trae al frente) la app
+// Aviso push de Firebase: llega { data: { titulo, texto, tag, ver } } (lo mandan los scripts de Logística y Cuadrilla)
+self.addEventListener('push', function (e) {
+  var p = {};
+  try { p = e.data ? e.data.json() : {}; } catch (x) { p = { data: { texto: e.data ? e.data.text() : '' } }; }
+  var d = p.data || p.notification || {};
+  e.waitUntil(self.registration.showNotification(String(d.titulo || d.title || 'CEDE'), {
+    body: String(d.texto || d.body || ''),
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    tag: String(d.tag || 'cede'),
+    renotify: true,
+    data: { ver: String(d.ver || '') }
+  }));
+});
+
+// Al tocar un aviso, abre (o trae al frente) la app; si es de una tarea, va directo a Cuadrilla
 self.addEventListener('notificationclick', function (e) {
   e.notification.close();
+  var ver = (e.notification.data && e.notification.data.ver) || '';
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (l) {
-    for (var i = 0; i < l.length; i++) if ('focus' in l[i]) return l[i].focus();
-    return self.clients.openWindow('./');
+    for (var i = 0; i < l.length; i++) {
+      if ('focus' in l[i]) {
+        if (ver) l[i].postMessage({ cede: 'ir', ver: ver });
+        return l[i].focus();
+      }
+    }
+    return self.clients.openWindow('./' + (ver ? '?ver=' + encodeURIComponent(ver) : ''));
   }));
 });

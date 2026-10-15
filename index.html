@@ -79,14 +79,17 @@
 <div id="onda"></div>
 <iframe id="app" title="Logística CEDE" allow="geolocation; clipboard-write"></iframe>
 <div id="permiso" role="dialog" aria-label="Avisos del celular">
-  <span>🔔 ¿Permitir que el celular te avise cuando se entrega un pedido?</span>
+  <span id="permTxt">🔔 ¿Permitir que el celular te avise cuando se entrega un pedido?</span>
   <button id="permNo">Ahora no</button><button id="permSi">Permitir</button>
 </div>
 <script>
   var APP = 'https://script.google.com/a/macros/adeconsa.com.ar/s/AKfycbzeA2WdrARUmYqzylw0yo-xnqzJEmC1eU0Bq8Vdaca5d_FQdN1cx16dQdZDuHu3yUrzoQ/exec';
   // Ya instalada: se lo avisa a la app para que oculte los botones de "Instalar"
   var instalada = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
-  document.getElementById('app').src = APP + (instalada ? '?pwa=1' : '');
+  // ?ver=cuadrilla (al tocar el aviso de una tarea) abre directo ese apartado
+  var verAp = (location.search.match(/[?&]ver=(cuadrilla|reportes)(?:&|$)/) || [])[1] || '';
+  var qApp = [instalada ? 'pwa=1' : '', verAp ? 'ver=' + verAp : ''].filter(Boolean).join('&');
+  document.getElementById('app').src = APP + (qApp ? '?' + qApp : '');
 
   /* ---------- Pantalla de carga: el logo entra, y cuando la app está lista "explota" ---------- */
   var t0 = Date.now(), abierta = false, INTRO = 1500;
@@ -126,55 +129,124 @@
     }, 170);
   }
 
-  /* ---------- Mensajes con la app (que corre adentro, en Google) ---------- */
-  var diferido = null, fuenteApp = null;
+  /* ---------- Mensajes con las apps de adentro (Logística, y Cuadrilla adentro de Logística) ---------- */
+  // Cada pedido se contesta a la ventana que lo hizo. El permiso y el token de avisos se mandan a todas.
+  var diferido = null, pushToken = '';
   var soporta = 'Notification' in window && 'serviceWorker' in navigator;
+  var EQUIPO = /iPhone|iPad|iPod/i.test(navigator.userAgent) ? 'iPhone' : (/Android/i.test(navigator.userAgent) ? 'Android' : 'Compu');
+  var TXT_PERMISO = '🔔 ¿Permitir que el celular te avise cuando se entrega un pedido?';
   function estadoPermiso() { return soporta ? Notification.permission : 'no-soportado'; }
-  function responder(msg) { try { fuenteApp && fuenteApp.postMessage(msg, '*'); } catch (x) {} }
+  function enviar(w, msg) { try { w && w.postMessage(msg, '*'); } catch (x) {} }
+  // A todas las ventanas de adentro: la app de Logística y las que tenga adentro (Cuadrilla, Reportes)
+  function aTodas(msg, w, n) {
+    w = w || window; n = n || 0;
+    if (n > 6) return;
+    try { for (var i = 0; i < w.frames.length; i++) { enviar(w.frames[i], msg); aTodas(msg, w.frames[i], n + 1); } } catch (x) {}
+  }
+  function mensajeToken() { return { cede: 'push-token', token: pushToken, equipo: EQUIPO }; }
+
   window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); diferido = e; });
   window.addEventListener('appinstalled', function () { diferido = null; });
+
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (!d || !d.cede) return;
     try { if (!/\.(googleusercontent|google)\.com$/.test(new URL(e.origin).hostname)) return; } catch (x) { return; }
-    fuenteApp = e.source;
+    var src = e.source;
     // La app ya mostró sus datos: se abre con la animación
     if (d.cede === 'lista') { abrirApp(); return; }
     // Botón "Instalar en Android": si Chrome ofrece instalar, se abre el cartel directamente
     if (d.cede === 'instalar') {
-      if (d.so === 'android' && diferido) {
-        responder({ cede: 'ok' });
-        diferido.prompt();
-        diferido.userChoice.then(function () { diferido = null; });
-      }
+      if (d.so === 'android' && diferido) { enviar(src, { cede: 'ok' }); diferido.prompt(); diferido.userChoice.then(function () { diferido = null; }); }
       return; // si no se puede (iPhone, ya instalada, otro navegador), la app muestra los pasos
     }
-    // La app pregunta si puede usar los avisos del celular
-    if (d.cede === 'hola') { responder({ cede: 'permiso', estado: estadoPermiso() }); return; }
-    // La app pide activar los avisos: se muestra la barra para que la persona toque "Permitir"
+    // Una app de adentro pregunta si puede usar los avisos del celular (y recibe el token si ya está)
+    if (d.cede === 'hola') { enviar(src, { cede: 'permiso', estado: estadoPermiso() }); if (pushToken) enviar(src, mensajeToken()); return; }
+    // Pide activar los avisos: se muestra la barra para que la persona toque "Permitir"
     if (d.cede === 'pedir-permiso') {
-      if (estadoPermiso() === 'default') document.getElementById('permiso').classList.add('on');
-      else responder({ cede: 'permiso', estado: estadoPermiso() });
+      if (estadoPermiso() === 'default') {
+        document.getElementById('permTxt').textContent = d.texto ? String(d.texto).slice(0, 160) : TXT_PERMISO;
+        document.getElementById('permiso').classList.add('on');
+      } else enviar(src, { cede: 'permiso', estado: estadoPermiso() });
       return;
     }
-    // Pedido entregado: notificación del celular si la app no está a la vista
+    // Pedido entregado (sin avisos push): notificación del celular si la app no está a la vista
     if (d.cede === 'notif') {
       if (estadoPermiso() !== 'granted' || !document.hidden) return;
       navigator.serviceWorker.ready.then(function (r) {
-        return r.showNotification(String(d.titulo || 'Logística CEDE'), {
-          body: String(d.texto || ''), icon: 'icon-192.png', badge: 'icon-192.png', tag: String(d.tag || 'cede'), renotify: true
-        });
+        return r.showNotification(String(d.titulo || 'Logística CEDE'), { body: String(d.texto || ''), icon: 'icon-192.png', badge: 'icon-192.png', tag: String(d.tag || 'cede'), renotify: true });
       }).catch(function () {});
     }
   });
+
   document.getElementById('permSi').onclick = function () {
     document.getElementById('permiso').classList.remove('on');
-    Notification.requestPermission().then(function () { responder({ cede: 'permiso', estado: estadoPermiso() }); });
+    Notification.requestPermission().then(function () {
+      aTodas({ cede: 'permiso', estado: estadoPermiso() });
+      iniciarPush();
+    });
   };
   document.getElementById('permNo').onclick = function () {
     document.getElementById('permiso').classList.remove('on');
-    responder({ cede: 'permiso', estado: estadoPermiso() });
+    aTodas({ cede: 'permiso', estado: estadoPermiso() });
   };
+
+  /* ---------- Avisos push (Firebase Cloud Messaging) ---------- */
+  // Los datos del proyecto de Firebase están en firebase-config.js (lo que muestra la consola de Firebase en
+  // Configuración del proyecto → Tus apps → Config). Con el permiso dado, se pide el token de este celular y se
+  // lo pasa a las apps de adentro: cada una lo anota en su planilla (Logística: pedidos entregados;
+  // Cuadrilla: tareas asignadas al operario). El aviso lo muestra sw.js aunque la app esté cerrada.
+  var FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+  // El service worker se registra siempre (guarda la app para abrir rápido y sin conexión, y muestra los avisos)
+  var swListo = ('serviceWorker' in navigator) ? navigator.serviceWorker.register('sw.js').then(function () { return navigator.serviceWorker.ready; }) : Promise.reject(new Error('sin service worker'));
+  swListo.catch(function () {});
+  function cargarScript(src) {
+    return new Promise(function (ok, bad) {
+      var s = document.createElement('script'); s.src = src; s.async = true;
+      s.onload = ok; s.onerror = function () { bad(new Error('No cargó ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+  function leerConfigFirebase() {
+    return fetch('firebase-config.js', { cache: 'no-cache' }).then(function (r) {
+      if (!r.ok) throw new Error('Falta firebase-config.js');
+      return r.text();
+    }).then(function (t) {
+      var c = {}, m, re = /(apiKey|authDomain|projectId|storageBucket|messagingSenderId|appId|vapidKey)\s*:\s*["']([^"']+)["']/g;
+      while ((m = re.exec(t))) c[m[1]] = m[2];
+      if (!c.apiKey || !c.projectId || !c.messagingSenderId || !c.appId) throw new Error('firebase-config.js incompleto');
+      return c;
+    });
+  }
+  var pushIniciado = false;
+  function iniciarPush() {
+    if (pushIniciado || !soporta || estadoPermiso() !== 'granted') return;
+    pushIniciado = true;
+    var cfg;
+    Promise.all([swListo, leerConfigFirebase()]).then(function (r) {
+      cfg = r[1];
+      return cargarScript(FB + 'firebase-app-compat.js')
+        .then(function () { return cargarScript(FB + 'firebase-messaging-compat.js'); })
+        .then(function () {
+          if (!firebase.apps.length) firebase.initializeApp({ apiKey: cfg.apiKey, authDomain: cfg.authDomain, projectId: cfg.projectId, storageBucket: cfg.storageBucket, messagingSenderId: cfg.messagingSenderId, appId: cfg.appId });
+          var op = { serviceWorkerRegistration: r[0] };
+          if (cfg.vapidKey) op.vapidKey = cfg.vapidKey;
+          return firebase.messaging().getToken(op);
+        });
+    }).then(function (t) {
+      if (!t) throw new Error('sin token');
+      pushToken = t;
+      aTodas(mensajeToken());
+    }).catch(function (e) {
+      pushIniciado = false;
+      console.warn('Avisos push: ' + ((e && e.message) || e));
+    });
+  }
+  // Al tocar un aviso con la app abierta, sw.js pide ir al apartado (por ejemplo Cuadrilla)
+  if ('serviceWorker' in navigator) navigator.serviceWorker.onmessage = function (e) {
+    if (e.data && e.data.cede === 'ir') aTodas({ cede: 'ir', ver: String(e.data.ver || '') });
+  };
+  iniciarPush();
 
   /* ---------- Carga lenta / sin conexión ---------- */
   // Si la app carga pero no avisa (versión vieja del script), se abre igual a los 5 segundos
@@ -189,7 +261,6 @@
   window.addEventListener('offline', sinConexion);
   window.addEventListener('online', function () { if (!abierta) location.reload(); });
   setTimeout(function () { if (!abierta) document.getElementById('msg').textContent = 'Está tardando más de lo normal'; }, 15000);
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
 </script>
 </body>
 </html>
