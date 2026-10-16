@@ -170,6 +170,17 @@
       } else enviar(src, { cede: 'permiso', estado: estadoPermiso() });
       return;
     }
+    // Sesión de Cuadrilla y Reportes: en el iPhone se borra lo que guardan las apps de adentro al cerrar,
+    // así que se guarda acá (la app instalada) y se les devuelve cuando la piden al abrir
+    if (d.cede === 'sesion-guardar') {
+      try { if (d.token) localStorage.setItem('cede_sesion_cuadrilla', String(d.token).slice(0, 200)); else localStorage.removeItem('cede_sesion_cuadrilla'); } catch (x) {}
+      return;
+    }
+    if (d.cede === 'sesion-pedir') {
+      var tk = ''; try { tk = localStorage.getItem('cede_sesion_cuadrilla') || ''; } catch (x) {}
+      try { src.postMessage({ cede: 'sesion', token: tk }, e.origin); } catch (x) {}
+      return;
+    }
     // Pedido entregado (sin avisos push): notificación del celular si la app no está a la vista
     if (d.cede === 'notif') {
       if (estadoPermiso() !== 'granted' || !document.hidden) return;
